@@ -1,0 +1,140 @@
+// Prisma schema for Mafia game
+// Portable: swap the provider to "postgresql" and the url to a Postgres URL
+// for a seamless migration to a real database when you outgrow SQLite.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String   @id @default(cuid())
+  firebaseUid     String   @unique
+  username        String
+  email           String?  @unique
+  avatar          String?
+  totalGamesPlayed Int     @default(0)
+  gamesWon         Int     @default(0)
+  totalPoints      Int     @default(0)
+
+  // Role-wise stats
+  mafiaPlayed   Int @default(0)
+  mafiaWon      Int @default(0)
+  policePlayed  Int @default(0)
+  policeWon     Int @default(0)
+  doctorPlayed  Int @default(0)
+  doctorWon     Int @default(0)
+  citizenPlayed Int @default(0)
+  citizenWon    Int @default(0)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  roomPlayers   RoomPlayer[]
+  gamePlayers   GamePlayer[]
+  matchHistory  MatchHistory[]
+}
+
+model Room {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  isPrivate Boolean  @default(false)
+  password  String?
+  hostId    String
+  status    String   @default("waiting") // waiting | in-game | finished
+  createdAt DateTime @default(now())
+
+  players   RoomPlayer[]
+  game      Game?
+}
+
+model RoomPlayer {
+  id        String   @id @default(cuid())
+  roomId    String
+  userId    String
+  isHost    Boolean  @default(false)
+  isReady   Boolean  @default(false)
+  joinedAt  DateTime @default(now())
+
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+}
+
+model Game {
+  id              String   @id @default(cuid())
+  roomId          String   @unique
+  phase           String   @default("night") // night | day-discussion | day-voting | game-over
+  round           Int      @default(1)
+  winner          String?  // mafia | town
+  startedAt       DateTime @default(now())
+  endedAt         DateTime?
+
+  room            Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  players         GamePlayer[]
+  votes           Vote[]
+  nightActions    NightAction[]
+  matchHistory    MatchHistory[]
+}
+
+model GamePlayer {
+  id          String   @id @default(cuid())
+  gameId      String
+  userId      String
+  role        String   // mafia | police | doctor | citizen
+  isAlive     Boolean  @default(true)
+  eliminatedAt DateTime?
+
+  game        Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, userId])
+}
+
+model Vote {
+  id          String   @id @default(cuid())
+  gameId      String
+  voterId     String   // user id
+  targetId    String   // user id
+  round       Int
+  createdAt   DateTime @default(now())
+
+  game        Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, voterId, round])
+}
+
+model NightAction {
+  id          String   @id @default(cuid())
+  gameId      String
+  actorId     String   // user id
+  actionType  String   // kill | save | investigate
+  targetId    String?
+  round       Int
+  createdAt   DateTime @default(now())
+
+  game        Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, actorId, round])
+}
+
+model MatchHistory {
+  id              String   @id @default(cuid())
+  gameId          String
+  userId          String
+  role            String
+  won             Boolean
+  pointsEarned    Int
+  roundsPlayed    Int
+  playersCount    Int
+  playedAt        DateTime @default(now())
+
+  game            Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
