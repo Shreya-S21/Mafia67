@@ -34,7 +34,25 @@ Built with a focus on:
 - 🚀 Fast deployment and scalability
 
 ---
+## 📸 Game Preview
 
+<div align="center">
+
+<img src="./screenshots/home.png" width="800"/>
+
+<br><br>
+
+<img src="./screenshots/lobby.png" width="800"/>
+
+<br><br>
+
+<img src="./screenshots/night-phase.png" width="800"/>
+
+<br><br>
+
+<img src="./screenshots/day-discussion.png" width="800"/>
+
+</div>
 ## 🌟 Live Demo
 
 ### 🚀 Play Now
