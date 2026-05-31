@@ -12,8 +12,9 @@ import {
   createRoom, joinPlayer, leaveRoom, kickPlayer,
   getRoom, getPlayers, onPlayersChanged,
   sendChatMessage, getMessages, onNewMessage, updatePlayer, updateRoomHost,
-  deleteRoom,
+  deleteRoom, onGameStateChanged,
 } from "../lib/db";
+import type { GameStateData } from "../lib/db";
 import { createBot, generateBotNames, cryptoId } from "../lib/gameEngine";
 import { SELECTABLE_AVATARS } from "../lib/avatars";
 import { saveProfile, loadProfile } from "../lib/storage";
@@ -152,6 +153,19 @@ export function Lobby() {
     if (!code) return;
     return onPlayersChanged(code, setPlayers);
   }, [code]);
+
+  // Listen for game state changes — auto-navigate when game starts
+  const gameStartedRef = useRef(false);
+  useEffect(() => {
+    if (!code) return;
+    return onGameStateChanged(code, (gs: GameStateData | null) => {
+      // If game phase is no longer "lobby", the game has started
+      if (gs && gs.phase !== "lobby" && !gameStartedRef.current) {
+        gameStartedRef.current = true;
+        navigate(`/game/${code}`);
+      }
+    });
+  }, [code, navigate]);
 
   useEffect(() => {
     if (!code) return;
