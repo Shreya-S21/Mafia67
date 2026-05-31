@@ -156,7 +156,7 @@ Repeat Until Victory
                │
                ▼
 ┌──────────────────────────────┐
-│ Prisma + SQLite Database     │
+│ FireBase        Database     │
 └──────────────────────────────┘
 ```
 
@@ -177,13 +177,12 @@ Repeat Until Victory
 
 - Node.js
 - Express
-- Socket.IO
-- Prisma ORM
+- FireBase
 
 ### Database
 
 - SQLite
-- PostgreSQL Ready
+- Firebase
 
 ### Authentication
 
