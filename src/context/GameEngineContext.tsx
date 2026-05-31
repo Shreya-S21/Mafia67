@@ -1,4 +1,6 @@
 // Real-time game engine — Firebase synced
+// FIX: isHost is derived from BOTH the live players list AND
+//      from the room's hostId field so it's never wrong while players load.
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from "react";
 import {
   saveGameState, getGameState, getRoom, onPlayersChanged,
@@ -25,6 +27,7 @@ interface GameEngineValue {
   amAlive: boolean;
   winner: "mafia" | "town" | undefined;
   startGame: () => Promise<void>;
+  beginNight: () => Promise<void>;
   submitAction: (type: "kill" | "save" | "investigate", targetId: string) => Promise<void>;
   castVote: (targetId: string) => Promise<void>;
   sendMessage: (msg: string) => Promise<void>;
@@ -44,6 +47,7 @@ export function GameEngineProvider({
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // hostId loaded directly from the room doc — never wrong
   const [roomHostId, setRoomHostId] = useState<string>("");
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -51,10 +55,20 @@ export function GameEngineProvider({
   const phaseRef = useRef<GamePhase>("lobby");
   const advancingRef = useRef(false);
 
+  // isHost determination — multiple fallbacks so the host is NEVER wrong:
+  //  1. room doc's hostId matches me
+  //  2. my player entry is flagged isHost
+  //  3. I'm the only non-bot human in the room (I must be the host)
+  const humanPlayers = players.filter(p => !p.isBot);
   const isHost = myUid !== "" && (
     roomHostId === myUid ||
-    players.some(p => p.id === myUid && p.isHost)
+    players.some(p => p.id === myUid && p.isHost) ||
+    (humanPlayers.length === 1 && humanPlayers[0]?.id === myUid)
   );
+
+  // Keep isHost in a ref so the timer effect doesn't restart when it changes
+  const isHostRef = useRef(isHost);
+  useEffect(() => { isHostRef.current = isHost; }, [isHost]);
 
   const me = players.find(p => p.id === myUid);
   const myRole = gameState?.players.find(p => p.id === myUid)?.role ?? me?.role;
@@ -64,13 +78,20 @@ export function GameEngineProvider({
   const round = gameState?.round ?? 1;
   const winner = gameState?.winner;
 
+  // ── Load room host from DB immediately ─────────────────────────────────────
   useEffect(() => {
     if (!code || !myUid) return;
     getRoom(code).then(room => {
-      if (room) setRoomHostId(room.hostId);
-    });
+      if (room) {
+        setRoomHostId(room.hostId);
+        console.log("[Mafia67] Room host:", room.hostId, "| My uid:", myUid, "| Am I host?", room.hostId === myUid);
+      } else {
+        console.warn("[Mafia67] No room doc found for code:", code);
+      }
+    }).catch(e => console.error("[Mafia67] getRoom failed:", e));
   }, [code, myUid]);
 
+  // ── Listeners ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!code) return;
     return onPlayersChanged(code, setPlayers);
@@ -85,6 +106,7 @@ export function GameEngineProvider({
     });
   }, [code, myUid]);
 
+  // Load persisted game state (reconnect support)
   useEffect(() => {
     if (!code) return;
     getGameState(code).then(gs => {
@@ -106,28 +128,21 @@ export function GameEngineProvider({
     });
   }, [code]);
 
+  // Sync live players into gameState
   useEffect(() => {
     if (!players.length) return;
     setGameState(prev => {
       if (!prev) return prev;
       if (!prev.players.length) return { ...prev, players };
-      const currentHost = players.find(p => p.isHost);
-      let newPlayers = players;
-      if (!currentHost && myUid) {
-        const mePlayer = players.find(p => p.id === myUid);
-        if (mePlayer && mePlayer.isAlive) {
-          newPlayers = players.map(p => p.id === myUid ? { ...p, isHost: true } : p);
-          updatePlayer(code, myUid, { isHost: true }).catch(console.error);
-        }
-      }
       const merged = prev.players.map(gp => {
-        const live = newPlayers.find(p => p.id === gp.id);
-        return live ? { ...gp, username: live.username, avatar: live.avatar, isHost: live.isHost } : gp;
+        const live = players.find(p => p.id === gp.id);
+        return live ? { ...gp, username: live.username, avatar: live.avatar } : gp;
       });
       return { ...prev, players: merged };
     });
-  }, [players, myUid, code]);
+  }, [players]);
 
+  // ── Helpers ─────────────────────────────────────────────────────────────────
   const clearTimers = useCallback(() => {
     if (timerRef.current) clearInterval(timerRef.current);
     botTimerRef.current.forEach(clearTimeout);
@@ -171,29 +186,11 @@ export function GameEngineProvider({
     });
   }
 
+  // ── Phase advancement (host only) ───────────────────────────────────────────
   const advancePhase = useCallback(async (prev: GameState) => {
     if (advancingRef.current) return;
     advancingRef.current = true;
     try {
-      const alivePlayers = prev.players.filter(p => p.isAlive);
-      const mafiaCount = alivePlayers.filter(p => p.role === "mafia").length;
-      const townCount = alivePlayers.length - mafiaCount;
-
-      // FIX: Force end game if only 2 players left (1 Mafia, 1 Town) -> Mafia wins
-      if (alivePlayers.length === 2 && mafiaCount === 1) {
-        const gs: GameState = {
-          ...prev, phase: "game-over", players: prev.players, timer: 0, winner: "mafia",
-          nightActions: {}, votes: [],
-          messages: [...prev.messages, {
-            id: cryptoId(), userId: "system", username: "System",
-            message: "🎭 THE MAFIA WINS! Only 2 players left.",
-            timestamp: Date.now(), type: "system",
-          }],
-        };
-        setGameState(gs); await persist(gs); await updateRoomStatus(code, "finished");
-        return;
-      }
-
       if (prev.phase === "night") {
         sfx.day();
         const { killed, saved, announcement } = resolveNight(prev);
@@ -231,10 +228,10 @@ export function GameEngineProvider({
 
       } else if (prev.phase === "day-discussion") {
         const gs: GameState = {
-          ...prev, phase: "day-voting", timer: 45, votes: [], // Increased timer to 45s so people can vote
+          ...prev, phase: "day-voting", timer: 30, votes: [],
           messages: [...prev.messages, {
             id: cryptoId(), userId: "system", username: "System",
-            message: "⚖️ VOTING PHASE! Choose who to eliminate.", timestamp: Date.now(), type: "system",
+            message: "⚖️ Voting begins! Choose who to eliminate.", timestamp: Date.now(), type: "system",
           }],
         };
         setGameState(gs); await persist(gs);
@@ -297,50 +294,56 @@ export function GameEngineProvider({
     }
   }, [code, persist]);
 
+  // ── Timer (simple decrement, only host drives phase transitions) ──────────
   useEffect(() => {
-    if (!gameState || gameState.phase === "game-over" || gameState.phase === "lobby") {
-      clearTimers(); return;
+    // No timer during lobby, role-reveal, or game-over
+    if (!gameState || gameState.phase === "game-over" || gameState.phase === "lobby" || gameState.phase === "role-reveal") {
+      clearTimers();
+      return;
     }
     if (phaseRef.current === gameState.phase) return;
     phaseRef.current = gameState.phase;
     clearTimers();
 
-    let lastTime = Date.now();
+    // Simple 1-second interval that decrements timer
     timerRef.current = setInterval(() => {
-      const now = Date.now();
-      const delta = Math.floor((now - lastTime) / 1000);
-      lastTime = now;
-
       setGameState(prev => {
         if (!prev || prev.phase === "game-over" || prev.phase === "lobby") return prev;
-        if (prev.timer > delta) return { ...prev, timer: prev.timer - delta };
-        if (isHost) advancePhase(prev);
-        return { ...prev, timer: 0 };
+        if (prev.timer > 0) {
+          return { ...prev, timer: prev.timer - 1 };
+        }
+        return prev;
       });
-    }, 500);
+    }, 1000);
 
+    // Separate effect to detect when timer hits 0 and advance
     return () => clearTimers();
-  }, [gameState?.phase, isHost, advancePhase, clearTimers]);
+  }, [gameState?.phase, clearTimers]);
+
+  // Detect timer expiry and advance phase (host only)
+  useEffect(() => {
+    if (!gameState) return;
+    if (gameState.phase === "game-over" || gameState.phase === "lobby" || gameState.phase === "role-reveal") return;
+    if (gameState.timer === 0 && isHostRef.current) {
+      // Prevent multiple advances
+      if (!advancingRef.current) {
+        advancePhase(gameState);
+      }
+    }
+  }, [gameState?.timer, gameState?.phase, advancePhase]);
 
   useEffect(() => { if (timer > 0 && timer <= 5) sfx.countdown(); }, [timer]);
 
-  // FIX: Expanded bot chat to 25+ unique messages
+  // Bot day chat
   useEffect(() => {
     if (!gameState || gameState.phase !== "day-discussion") return;
     const chatMsgs = [
-      "Anyone else have a bad feeling? 👀", "I'm watching everyone very carefully...",
-      "The Mafia can't hide forever!", "Think logically. Who's been quiet?",
-      "Something feels off today. 🤔", "Let's not rush the vote this time.",
-      "I saw someone looking very nervous last night...", "Why is everyone so quiet?",
-      "If we vote wrong, the Mafia wins easily.", "I trust the quiet ones the least.",
-      "This feels like a trap.", "Let's vote out the most suspicious person.",
-      "I'm just a citizen, I swear! 🙏", "The Doctor needs to save the right person tonight.",
-      "Did anyone hear anything last night?", "I think the Mafia is trying to blend in.",
-      "We need to stick together, Town!", "Who voted for whom last time? Suspicious...",
-      "I have a bad feeling about this round.", "Let's end this tonight!",
-      "Stop accusing me, I'm Town!", "The real Mafia is probably acting too innocent.",
-      "I'm voting for the person who hasn't said anything.", "We are running out of time!",
-      "My gut tells me it's the person who voted last round."
+      "Anyone else have a bad feeling? 👀",
+      "I'm watching everyone very carefully...",
+      "The Mafia can't hide forever!",
+      "Think logically. Who's been quiet?",
+      "Something feels off today. 🤔",
+      "Let's not rush the vote this time.",
     ];
     const interval = setInterval(async () => {
       if (Math.random() > 0.4) return;
@@ -352,30 +355,39 @@ export function GameEngineProvider({
         message: chatMsgs[Math.floor(Math.random() * chatMsgs.length)],
         type: "public",
       });
-    }, 5000);
+    }, 7000);
     return () => clearInterval(interval);
   }, [gameState?.phase, code]);
 
+  // ── Public actions ──────────────────────────────────────────────────────────
   const startGame = useCallback(async () => {
     if (!isHost || players.length < 6) return;
-    sfx.night();
     const withRoles = assignRoles(players);
     for (const p of withRoles) {
       await updatePlayer(code, p.id, { role: p.role, isAlive: true });
     }
+    // Set phase to "role-reveal" so players see the card flip first
     const gs: GameState = {
-      roomId: code, phase: "night", round: 1, players: withRoles,
-      nightActions: {}, votes: [], timer: 45,
+      roomId: code, phase: "role-reveal", round: 1, players: withRoles,
+      nightActions: {}, votes: [], timer: 0,
       messages: [
-        { id: cryptoId(), userId: "system", username: "System", message: "🎭 Roles assigned. The game begins!", timestamp: Date.now(), type: "system" },
-        { id: cryptoId(), userId: "system", username: "System", message: "🌙 Night 1 falls. Close your eyes...", timestamp: Date.now() + 100, type: "system" },
+        { id: cryptoId(), userId: "system", username: "System", message: "🎭 Roles have been assigned. Look at your card!", timestamp: Date.now(), type: "system" },
       ],
     };
     setGameState(gs);
     await persist(gs);
     await updateRoomStatus(code, "in-game");
-    scheduleBotNightActions(withRoles);
   }, [code, isHost, players, persist]);
+
+  // Called when player clicks "I understand my role" → starts Night 1
+  const beginNight = useCallback(async () => {
+    if (!gameState || gameState.phase !== "role-reveal") return;
+    sfx.night();
+    const updated = { ...gameState, phase: "night" as GamePhase, timer: 45 };
+    setGameState(updated);
+    await persist(updated);
+    scheduleBotNightActions(gameState.players);
+  }, [gameState, persist]);
 
   const submitAction = useCallback(async (type: "kill" | "save" | "investigate", targetId: string) => {
     sfx.select();
@@ -414,7 +426,7 @@ export function GameEngineProvider({
     <Ctx.Provider value={{
       gameState, players, messages, phase, timer, round,
       myUid, isHost, myRole, amAlive, winner,
-      startGame, submitAction, castVote, sendMessage,
+      startGame, beginNight, submitAction, castVote, sendMessage,
     }}>
       {children}
     </Ctx.Provider>

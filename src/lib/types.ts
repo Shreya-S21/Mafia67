@@ -14,7 +14,7 @@ export interface Player {
   connected: boolean;
 }
 
-export type GamePhase = "lobby" | "night" | "day-discussion" | "day-voting" | "game-over";
+export type GamePhase = "lobby" | "role-reveal" | "night" | "day-discussion" | "day-voting" | "game-over";
 
 export interface NightActions {
   mafiaTarget?: string;

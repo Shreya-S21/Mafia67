@@ -149,6 +149,17 @@ export async function updateRoomHost(code: string, hostId: string): Promise<void
   await dbUpdate(ref(db, roomRef(code)), { hostId });
 }
 
+export async function deleteRoom(code: string): Promise<void> {
+  if (!db) return;
+  // Delete room doc, players, messages, and game state
+  await Promise.all([
+    dbRemove(ref(db, roomRef(code))),
+    dbRemove(ref(db, playersRef(code))),
+    dbRemove(ref(db, messagesRef(code))),
+    dbRemove(ref(db, gameStateRef(code))),
+  ]);
+}
+
 // ── Save Game State ──
 export async function saveGameState(code: string, gs: GameStateData): Promise<void> {
   if (!db) return;

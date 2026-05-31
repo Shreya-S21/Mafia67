@@ -12,6 +12,7 @@ import {
   createRoom, joinPlayer, leaveRoom, kickPlayer,
   getRoom, getPlayers, onPlayersChanged,
   sendChatMessage, getMessages, onNewMessage, updatePlayer, updateRoomHost,
+  deleteRoom,
 } from "../lib/db";
 import { createBot, generateBotNames, cryptoId } from "../lib/gameEngine";
 import { SELECTABLE_AVATARS } from "../lib/avatars";
@@ -57,18 +58,21 @@ export function Lobby() {
   }, [myName]);
 
   // ── Room expiry countdown ─────────────────────────────────────────────────
+  const roomDeletedRef = useRef(false);
   useEffect(() => {
     const tick = setInterval(() => {
       const elapsed = Date.now() - roomCreatedAt;
       const left = Math.max(0, ROOM_EXPIRY_MS - elapsed);
       setTimeLeft(left);
-      if (left === 0) {
-        // Room expired — kick everyone back home
+      if (left === 0 && !roomDeletedRef.current) {
+        // Room expired — delete it from Firebase and go home
+        roomDeletedRef.current = true;
+        deleteRoom(code!).catch(console.error);
         navigate("/");
       }
     }, 1000);
     return () => clearInterval(tick);
-  }, [roomCreatedAt, navigate]);
+  }, [roomCreatedAt, navigate, code]);
 
   // ── Init: join room ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -323,13 +327,7 @@ export function Lobby() {
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => navigate("/")}
-              className="mr-1 rounded-lg p-1.5 text-slate-400 hover:bg-white/5 hover:text-white"
-              title="Back to home"
-              aria-label="Back to home"
-            >
+            <button onClick={() => navigate("/")} className="mr-1 rounded-lg p-1.5 text-slate-400 hover:bg-white/5 hover:text-white" aria-label="Back to home">
               <ArrowLeft size={18} />
             </button>
             <h1 className="text-2xl font-bold gradient-text">{roomName}</h1>
