@@ -1,7 +1,7 @@
 // Landing / Home page
 // - Unauthenticated: Full-screen animated hero with floating role cards
 // - Authenticated: Personalized animated dashboard
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Users, Plus, LogIn, Lock, Globe, Trophy, Shield, Moon, Sun, Play, ArrowRight, Clock, Zap } from "lucide-react";
 import { Button, Card, Input, Modal, Badge, Avatar } from "./ui";
@@ -30,7 +30,7 @@ export function Landing() {
 }
 
 // ── User Dashboard ──
-function UserDashboard({ user, profile }: { user: any; profile: UserProfile }) {
+function UserDashboard({ user, profile }: { user: { uid: string; username: string; avatar?: string | null }; profile: UserProfile }) {
   const navigate = useNavigate();
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
@@ -71,7 +71,7 @@ function UserDashboard({ user, profile }: { user: any; profile: UserProfile }) {
         <div className="relative flex flex-col items-start gap-4 sm:flex-row sm:items-center">
           <div className="flex items-center gap-4">
             <div className="animate-float">
-              <Avatar name={profile.username} src={user.avatar} size={64} ring="ring-4 ring-red-500/30" />
+              <Avatar name={profile.username} src={profile.avatar} uid={user.uid} size={64} ring="ring-4 ring-red-500/30" />
             </div>
             <div>
               <h1 className="text-3xl font-bold">
@@ -166,7 +166,7 @@ function UserDashboard({ user, profile }: { user: any; profile: UserProfile }) {
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg text-xs font-bold text-amber-400">
                     {index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `#${index + 1}`}
                   </div>
-                  <Avatar name={entry.username} src={entry.avatar} size={32} />
+                  <Avatar name={entry.username} src={entry.avatar} uid={entry.id} size={32} />
                   <div className="font-medium">{entry.username}</div>
                 </div>
                 <div className="font-mono text-sm font-bold text-amber-400">{entry.totalPoints}</div>
@@ -203,13 +203,13 @@ function UserDashboard({ user, profile }: { user: any; profile: UserProfile }) {
         </Card>
       </div>
 
-      <CreateRoomModal open={showCreate} onClose={() => setShowCreate(false)} onCreated={(code) => navigate(`/lobby/${code}`)} />
+      <CreateRoomModal hostId={user.uid} open={showCreate} onClose={() => setShowCreate(false)} onCreated={(code) => navigate(`/lobby/${code}`)} />
       <JoinRoomModal open={showJoin} onClose={() => setShowJoin(false)} onJoined={(code) => navigate(`/lobby/${code}`)} />
     </div>
   );
 }
 
-function StatCard({ icon, label, value, delay = 0, shimmer }: { icon: React.ReactNode; label: string; value: string | number; delay?: number; shimmer?: boolean }) {
+function StatCard({ icon, label, value, delay = 0, shimmer }: { icon: ReactNode; label: string; value: string | number; delay?: number; shimmer?: boolean }) {
   return (
     <div
       className="group relative overflow-hidden rounded-2xl border border-white/5 bg-white/5 p-5 transition hover:border-red-500/20 hover:bg-white/10"
@@ -225,7 +225,7 @@ function StatCard({ icon, label, value, delay = 0, shimmer }: { icon: React.Reac
   );
 }
 
-function QuickAction({ icon, title, desc, onClick }: { icon: React.ReactNode; title: string; desc: string; onClick: () => void }) {
+function QuickAction({ icon, title, desc, onClick }: { icon: ReactNode; title: string; desc: string; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
@@ -273,10 +273,11 @@ function MarketingLanding() {
               Live multiplayer
             </Badge>
             <h1 className="text-4xl font-bold leading-tight sm:text-6xl">
-            <span className="gradient-text" style={{ animation: "glow-pulse 3s ease-in-out infinite" }}>MAFIA</span><span className="text-slate-100">67</span>
-            <br />
-            <span className="text-slate-400">Live social deduction game</span>
+              <span className="gradient-text" style={{ animation: "glow-pulse 3s ease-in-out infinite" }}>Mafia67</span>
+              <br />
+              <span className="text-slate-100">The game of lies.</span>
             </h1>
+            <div className="mt-1 text-sm text-slate-500 font-medium tracking-widest uppercase">Where trust goes to die.</div>
             <p className="mt-4 max-w-lg text-slate-400">
               A real-time social deduction game. Bluff your way through the night,
               vote out the guilty by day, and survive to tell the tale.
@@ -381,13 +382,14 @@ function MarketingLanding() {
 }
 
 // ── Modals ──
-function CreateRoomModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (code: string) => void }) {
+function CreateRoomModal({ hostId, open, onClose, onCreated }: { hostId?: string; open: boolean; onClose: () => void; onCreated: (code: string) => void }) {
   const [name, setName] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [password, setPassword] = useState("");
   function handleCreate() {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
     localStorage.setItem(`mafia.room.${code}`, JSON.stringify({ code, name: name || "Mafia67 Room", isPrivate, password: isPrivate ? password : undefined, createdAt: Date.now() }));
+    if (hostId) localStorage.setItem(`mafia.createdBy.${code}`, hostId);
     onCreated(code);
   }
   return (

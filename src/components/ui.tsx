@@ -2,6 +2,7 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
 import { cn } from "../utils/cn";
 import { sfx } from "../lib/sound";
+import { getAvatarStyle } from "../lib/avatars";
 
 export function Button({
   className,
@@ -131,48 +132,52 @@ export function Badge({
 export function Avatar({
   name,
   src,
+  uid,
   size = 40,
   ring,
 }: {
   name: string;
   src?: string | null;
+  uid?: string;
   size?: number;
   ring?: string;
 }) {
-  const initial = name.trim().charAt(0).toUpperCase();
-  const hash = Array.from(name).reduce((a, c) => a + c.charCodeAt(0), 0);
-  const colors = [
-    "from-red-500 to-orange-500",
-    "from-purple-500 to-pink-500",
-    "from-blue-500 to-cyan-500",
-    "from-emerald-500 to-teal-500",
-    "from-amber-500 to-yellow-500",
-    "from-fuchsia-500 to-rose-500",
-  ];
-  const grad = colors[hash % colors.length];
+  const seed = uid || name;
+  const fallback = getAvatarStyle(seed || "player");
 
-  if (src) {
+  // We intentionally do not render Google/photo URLs in-game. Mafia67 uses the
+  // avatar the player chose; if none exists yet, we show a deterministic emoji.
+  const displayAvatar = src && !src.startsWith("http") ? src : fallback.emoji;
+
+  // If src is an emoji avatar (single char/emoji), show it on a colored bg
+  if (displayAvatar) {
+    const hash = Array.from(seed).reduce((a, c) => a + c.charCodeAt(0), 0);
+    const grads = [
+      "from-red-600 to-orange-600",
+      "from-purple-600 to-pink-600",
+      "from-blue-600 to-cyan-600",
+      "from-emerald-600 to-teal-600",
+      "from-amber-600 to-yellow-600",
+      "from-fuchsia-600 to-rose-600",
+      "from-indigo-600 to-violet-600",
+      "from-sky-600 to-blue-600",
+    ];
+    const grad = grads[hash % grads.length];
     return (
-      <img
-        src={src}
-        alt={name}
-        style={{ width: size, height: size }}
-        className={cn("rounded-full object-cover", ring)}
-      />
+      <div
+        style={{ width: size, height: size, fontSize: size * 0.52 }}
+        className={cn(
+          "flex items-center justify-center rounded-full bg-gradient-to-br select-none",
+          grad,
+          ring
+        )}
+      >
+        {displayAvatar}
+      </div>
     );
   }
-  return (
-    <div
-      style={{ width: size, height: size, fontSize: size * 0.4 }}
-      className={cn(
-        "flex items-center justify-center rounded-full bg-gradient-to-br font-semibold text-white",
-        grad,
-        ring
-      )}
-    >
-      {initial}
-    </div>
-  );
+
+  return null;
 }
 
 export function Spinner({ size = 16 }: { size?: number }) {

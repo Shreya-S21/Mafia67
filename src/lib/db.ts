@@ -2,6 +2,18 @@
 import { db, ref, dbGet, dbSet, dbRemove, dbUpdate, push, onValue, onChildAdded, off } from "./firebase";
 import type { Player, ChatMessage, NightActions, Vote, Role, GamePhase } from "./types";
 
+// Firebase Realtime Database rejects `undefined` values — strip them recursively
+function clean<T>(obj: T): T {
+  if (obj === null || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(clean) as unknown as T;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    if (v === undefined) continue;
+    out[k] = typeof v === "object" && v !== null ? clean(v) : v;
+  }
+  return out as T;
+}
+
 export function roomRef(code: string) { return `rooms/${code}`; }
 export function playersRef(code: string) { return `rooms/${code}/players`; }
 export function playerRef(code: string, uid: string) { return `rooms/${code}/players/${uid}`; }
@@ -48,7 +60,7 @@ export function cryptoId(): string {
 export async function createRoom(code: string, name: string, hostId: string, isPrivate: boolean, password?: string): Promise<RoomData> {
   if (!db) throw new Error("Database not configured");
   const room: RoomData = { name, code, isPrivate, password, hostId, status: "waiting", createdAt: Date.now() };
-  await dbSet(ref(db, roomRef(code)), room);
+  await dbSet(ref(db, roomRef(code)), clean(room));
   return room;
 }
 
@@ -77,9 +89,9 @@ export async function listRooms(): Promise<{ code: string; room: RoomData; playe
 // ── Join Room (add player) ──
 export async function joinPlayer(code: string, player: Omit<Player, "role">): Promise<Player> {
   if (!db) throw new Error("Database not configured");
-  const playerData: Player = { ...player, role: undefined };
+  const playerData = clean({ ...player });
   await dbSet(ref(db, playerRef(code, player.id)), playerData);
-  return playerData;
+  return playerData as Player;
 }
 
 // ── Leave Room ──
@@ -114,6 +126,8 @@ export function onPlayersChanged(code: string, callback: (players: Player[]) => 
       snap.forEach((childSnap: { val: () => Player }) => { players.push(childSnap.val()); });
     }
     callback(players);
+  }, (err) => {
+    console.error("onPlayersChanged error (check Firebase rules):", err);
   });
   return () => off(r);
 }
@@ -121,7 +135,7 @@ export function onPlayersChanged(code: string, callback: (players: Player[]) => 
 // ── Update Player ──
 export async function updatePlayer(code: string, uid: string, data: Partial<Player>): Promise<void> {
   if (!db) return;
-  await dbUpdate(ref(db, playerRef(code, uid)), data);
+  await dbUpdate(ref(db, playerRef(code, uid)), clean(data));
 }
 
 // ── Update Room Status ──
@@ -130,10 +144,15 @@ export async function updateRoomStatus(code: string, status: RoomData["status"])
   await dbUpdate(ref(db, roomRef(code)), { status });
 }
 
+export async function updateRoomHost(code: string, hostId: string): Promise<void> {
+  if (!db) return;
+  await dbUpdate(ref(db, roomRef(code)), { hostId });
+}
+
 // ── Save Game State ──
 export async function saveGameState(code: string, gs: GameStateData): Promise<void> {
   if (!db) return;
-  await dbUpdate(ref(db, gameStateRef(code)), gs);
+  await dbUpdate(ref(db, gameStateRef(code)), clean(gs));
 }
 
 // ── Get Game State ──
@@ -154,7 +173,7 @@ export function onGameStateChanged(code: string, callback: (gs: GameStateData | 
 // ── Send Chat Message ──
 export async function sendChatMessage(code: string, msg: Omit<ChatMessage, "timestamp">): Promise<void> {
   if (!db) return;
-  await push(ref(db, messagesRef(code)), { ...msg, timestamp: Date.now() });
+  await push(ref(db, messagesRef(code)), clean({ ...msg, timestamp: Date.now() }));
 }
 
 // ── Get Recent Messages ──
@@ -187,13 +206,17 @@ export async function saveUserToDB(uid: string, username: string, email?: string
   if (!db) return;
   const snap = await dbGet(ref(db, usersRef(uid)));
   if (!snap.exists()) {
-    await dbSet(ref(db, usersRef(uid)), {
+    await dbSet(ref(db, usersRef(uid)), clean({
       uid, username, email, avatar,
       totalGamesPlayed: 0, gamesWon: 0, totalPoints: 0,
       roleStats: { mafia: { played: 0, won: 0 }, police: { played: 0, won: 0 }, doctor: { played: 0, won: 0 }, citizen: { played: 0, won: 0 } },
       matchHistory: [],
       createdAt: Date.now(),
-    });
+    }));
+  } else {
+    // Keep Firebase profile aligned with the chosen in-app username/avatar.
+    // This prevents Google display names/photos from becoming the game identity.
+    await dbUpdate(ref(db, usersRef(uid)), clean({ username, email, avatar }));
   }
 }
 

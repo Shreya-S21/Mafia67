@@ -1,5 +1,5 @@
 {
-  "name": "mafia-game",
+  "name": "mafia67",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -10,8 +10,9 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^25.9.1",
     "clsx": "^2.1.1",
-    "firebase": "^12.14.0",
+    "firebase": "^10.14.1",
     "lucide-react": "^0.400.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -27,6 +28,6 @@
     "postcss": "^8.4.38",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.5.2",
-    "vite": "^8.0.14"
+    "vite": "^5.3.1"
   }
 }

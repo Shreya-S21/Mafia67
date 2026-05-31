@@ -3,6 +3,7 @@ import { onAuthStateChanged, auth, isFirebaseConfigured, type FBUser } from "../
 import { createProfile, loadProfile, saveProfile, addMatchToProfile } from "../lib/storage";
 import { saveUserToDB, updateUserStats, getLeaderboardDB } from "../lib/db";
 import { cryptoId } from "../lib/db";
+import { getAvatarStyle } from "../lib/avatars";
 import type { UserProfile, Role } from "../lib/types";
 
 interface AuthUser {
@@ -18,7 +19,7 @@ interface AuthContextValue {
   profile: UserProfile | null;
   loading: boolean;
   firebaseReady: boolean;
-  signInDemo: (username: string) => void;
+  signInDemo: (username: string, avatar?: string) => void;
   signOutUser: () => Promise<void>;
   refreshProfile: () => void;
   setProfile: (p: UserProfile) => void;
@@ -53,23 +54,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Firebase mode
     const unsub = onAuthStateChanged(auth!, (fbUser: FBUser | null) => {
       if (fbUser) {
+        const existing = loadProfile(fbUser.uid);
+
+        // The profile is the SINGLE SOURCE OF TRUTH for display name + avatar.
+        // We do NOT use the Google display name or photo for in-app display —
+        // only the username/avatar the player chose at signup.
+        const chosenName = existing?.username || fbUser.email?.split("@")[0] || "Player";
+        // If user has no chosen avatar yet (e.g. Google sign-in), assign a
+        // deterministic emoji so they always have one (never a Google photo).
+        const savedAvatar = existing?.avatar && !existing.avatar.startsWith("http") ? existing.avatar : undefined;
+        const chosenAvatar = savedAvatar || getAvatarStyle(fbUser.uid).emoji;
+
         const u: AuthUser = {
           uid: fbUser.uid,
-          username: fbUser.displayName || fbUser.email?.split("@")[0] || "Player",
+          username: chosenName,
           email: fbUser.email,
-          avatar: fbUser.photoURL,
+          avatar: chosenAvatar,  // chosen emoji avatar (may be undefined until picked)
         };
         setUser(u);
-        const existing = loadProfile(u.uid);
+
         if (existing) {
-          setProfileState(existing);
+          const normalized = existing.avatar === chosenAvatar ? existing : { ...existing, avatar: chosenAvatar };
+          if (existing.avatar !== chosenAvatar) saveProfile(normalized);
+          setProfileState(normalized);
         } else {
-          const p = createProfile(u.uid, u.username, u.email ?? undefined, u.avatar ?? undefined);
+          const p = createProfile(fbUser.uid, chosenName, fbUser.email ?? undefined, chosenAvatar);
           saveProfile(p);
           setProfileState(p);
         }
-        // Save to Firebase DB
-        saveUserToDB(u.uid, u.username, u.email ?? undefined, u.avatar ?? undefined);
+        saveUserToDB(fbUser.uid, chosenName, fbUser.email ?? undefined, chosenAvatar);
       } else {
         setUser(null);
         setProfileState(null);
@@ -79,12 +92,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => unsub();
   }, []);
 
-  function signInDemo(username: string) {
+  function signInDemo(username: string, avatar?: string) {
     const uid = "demo_" + cryptoId().slice(0, 8);
-    const u: AuthUser = { uid, username, isDemo: true };
+    // Always give them a chosen avatar (picked one, or a deterministic default)
+    const finalAvatar = avatar || getAvatarStyle(uid).emoji;
+    const u: AuthUser = { uid, username, avatar: finalAvatar, isDemo: true };
     localStorage.setItem(DEMO_USER_KEY, JSON.stringify(u));
     setUser(u);
-    const p = createProfile(uid, username);
+    const p = createProfile(uid, username, undefined, finalAvatar);
     saveProfile(p);
     setProfileState(p);
   }

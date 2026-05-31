@@ -1,4 +1,5 @@
 // Top navigation bar + app shell
+import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Users, Trophy, User as UserIcon, LogOut, Home, Crown, Volume2, VolumeX } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
@@ -8,7 +9,7 @@ import { AmbientBlobs } from "./Effects";
 import { sfx, isSoundEnabled, setSoundEnabled } from "../lib/sound";
 import { useState } from "react";
 
-export function Layout({ children }: { children: React.ReactNode }) {
+export function Layout({ children }: { children: ReactNode }) {
   const [soundOn, setSoundState] = useState(isSoundEnabled());
 
   function toggleSound() {
@@ -31,7 +32,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             </div>
             <div className="hidden sm:block">
               <div className="text-lg font-bold leading-tight">
-                <span className="gradient-text">MAFIA</span>
+                <span className="gradient-text">MAFIA67</span>
               </div>
               <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
                 Social Deduction
@@ -63,7 +64,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 <div className="hidden items-center gap-2 sm:flex">
                   <Avatar
                     name={profile?.username || user.username}
-                    src={user.avatar}
+                    src={profile?.avatar}
+                    uid={user.uid}
                     size={32}
                   />
                   <div className="text-right">
@@ -109,7 +111,7 @@ function NavLink({
   active,
 }: {
   to: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   label: string;
   active: boolean;
 }) {
