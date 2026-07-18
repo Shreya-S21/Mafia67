@@ -1,10 +1,8 @@
 // Firebase setup — Auth + Realtime Database
 import { initializeApp, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut as fbSignOut, updateProfile, onAuthStateChanged, type User as FBUser } from "firebase/auth";
-import { getDatabase, ref, set, get, onValue, off, remove, update, push, serverTimestamp, query, orderByChild, equalTo, limitToLast, child, onChildAdded, onChildChanged, onChildRemoved, get as dbGet, set as dbSet, remove as dbRemove, update as dbUpdate } from "firebase/database";
+import { getDatabase, ref, set, get, onValue, off, remove, update, push, query, orderByChild, equalTo, limitToLast, onChildAdded, onChildChanged, child } from "firebase/database";
 
-// Keys loaded ONLY from VITE_ environment variables.
-// Set them on your deployment platform (Vercel / Netlify).
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -39,7 +37,7 @@ if (isFirebaseConfigured) {
   db = getDatabase(app);
 }
 
-export { app, auth, db, ref, set, get, onValue, off, remove, update, push, serverTimestamp, query, orderByChild, equalTo, limitToLast, child, onChildAdded, onChildChanged, onChildRemoved, dbGet, dbSet, dbRemove, dbUpdate };
+export { app, auth, db, ref, set, get, onValue, off, remove, update, push, query, orderByChild, equalTo, limitToLast, onChildAdded, onChildChanged, child };
 export { onAuthStateChanged };
 export type { FBUser };
 export const googleProvider = new GoogleAuthProvider();
