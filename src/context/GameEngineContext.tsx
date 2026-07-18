@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback, ty
 import {
   saveGameState, getRoom, onPlayersChanged, onGameStateChanged,
   sendChatMessage, onNewMessage, updateRoomStatus, updatePlayer,
-  db, ref, dbUpdate, dbGet,
+  db, ref, dbUpdate, dbGet, initServerTimeSync, serverNow,
 } from "../lib/db";
 import type { GameStateData } from "../lib/db";
 import {
@@ -74,6 +74,9 @@ export function GameEngineProvider({ code, myUid, children }: { code: string; my
   const phase = gameState?.phase ?? "lobby";
   const round = gameState?.round ?? 1;
   const winner = gameState?.winner;
+
+  // ── Server time sync (so all clients agree on "now") ─────────────────────
+  useEffect(() => { initServerTimeSync(); }, []);
 
   // ── Room host ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -156,9 +159,9 @@ export function GameEngineProvider({ code, myUid, children }: { code: string; my
       setTimer(0);
       return;
     }
-    // Tick every 500ms for responsiveness
+    // Tick every 500ms — use SERVER time so all clients compute the same remaining value
     timerRef.current = setInterval(() => {
-      const remaining = Math.max(0, Math.ceil((phaseEndTime - Date.now()) / 1000));
+      const remaining = Math.max(0, Math.ceil((phaseEndTime - serverNow()) / 1000));
       setTimer(remaining);
       // Host advances phase when timer hits 0
       if (remaining === 0 && isHostRef.current && !advancingRef.current) {
@@ -173,9 +176,9 @@ export function GameEngineProvider({ code, myUid, children }: { code: string; my
   // ── Helpers ──────────────────────────────────────────────────────────────
   function clearBotTimers() { botTimerRef.current.forEach(clearTimeout); botTimerRef.current = []; }
 
-  // Persist game state — stores phaseEndTime as startedAt+timer so all clients can compute countdown
+  // Persist game state — stores startedAt in SERVER time so every client
+  // computes the same phaseEndTime = startedAt + timer*1000
   async function persistState(gs: Partial<GameState> & { phase: GamePhase; timer: number }) {
-    const now = Date.now();
     await saveGameState(code, {
       phase: gs.phase, round: gs.round ?? round, timer: gs.timer,
       nightActions: gs.nightActions ?? {},
@@ -183,7 +186,7 @@ export function GameEngineProvider({ code, myUid, children }: { code: string; my
       lastEliminated: gs.lastEliminated,
       lastSaved: gs.lastSaved,
       winner: gs.winner,
-      startedAt: now, // clients use: phaseEndTime = startedAt + timer*1000
+      startedAt: serverNow(), // server-anchored so all clients agree
     });
   }
 
