@@ -5,6 +5,20 @@ import { db, ref, dbGet, dbSet, dbRemove, dbUpdate, push, onValue, onChildAdded,
 export { db, ref, dbUpdate, dbGet };
 import type { Player, ChatMessage, NightActions, Vote, Role, GamePhase } from "./types";
 
+// ── Server time sync ──────────────────────────────────────────────────────
+// Firebase gives us the offset between this device's clock and the server clock.
+// serverNow() returns the current SERVER time, so all clients agree on "now".
+let serverTimeOffset = 0;
+export function initServerTimeSync() {
+  if (!db) return;
+  onValue(ref(db, ".info/serverTimeOffset"), (snap) => {
+    serverTimeOffset = snap.val() || 0;
+  });
+}
+export function serverNow(): number {
+  return Date.now() + serverTimeOffset;
+}
+
 // Firebase Realtime Database rejects `undefined` values — strip them recursively
 function clean<T>(obj: T): T {
   if (obj === null || typeof obj !== "object") return obj;
