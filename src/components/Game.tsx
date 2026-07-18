@@ -57,7 +57,7 @@ function FirebaseGameUI({ code }: { code: string }) {
   const navigate = useNavigate();
   const { user, profile, setProfile, updateUserStats } = useAuth();
   const engine = useGameEngine();
-  const { gameState, players, messages, phase, timer, round, myUid, isHost, myRole, amAlive, winner, policeResult, submitAction, castVote, sendMessage: sendMsg, startGame, beginNight } = engine;
+  const { gameState, players, messages, phase, timer, round, myUid, isHost, myRole, amAlive, winner, policeResult, hasActed, submitAction, castVote, sendMessage: sendMsg, startGame, beginNight } = engine;
 
   const [screen, setScreen] = useState<"role-reveal" | "game" | "game-over">("role-reveal");
   const [chatInput, setChatInput] = useState("");
@@ -162,10 +162,7 @@ function FirebaseGameUI({ code }: { code: string }) {
     "role-reveal": "🎭 Look at your role card",
     lobby: "⏳ Waiting for players",
   };
-  const hasActed = myRole === "mafia" ? !!gameState.nightActions.mafiaTarget
-    : myRole === "doctor" ? !!gameState.nightActions.doctorTarget
-    : myRole === "police" ? !!gameState.nightActions.policeTarget
-    : true;
+  // hasActed now comes from the engine context (line 60)
 
   return (
     <div className={`animate-fade-in ${isNight ? "bg-gradient-to-b from-indigo-950/20 to-transparent" : ""}`}>
