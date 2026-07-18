@@ -1,5 +1,8 @@
 // Real-time database layer — rooms, players, chat, game state
 import { db, ref, dbGet, dbSet, dbRemove, dbUpdate, push, onValue, onChildAdded, off } from "./firebase";
+
+// Re-export for direct use by GameEngineContext (atomic writes)
+export { db, ref, dbUpdate, dbGet };
 import type { Player, ChatMessage, NightActions, Vote, Role, GamePhase } from "./types";
 
 // Firebase Realtime Database rejects `undefined` values — strip them recursively

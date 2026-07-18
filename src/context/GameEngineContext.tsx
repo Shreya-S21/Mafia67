@@ -1,11 +1,13 @@
 // Real-time game engine — Firebase synced
-// FIX: isHost is derived from BOTH the live players list AND
-//      from the room's hostId field so it's never wrong while players load.
+// FIX: Non-host players now LISTEN to Firebase for all state changes.
+//      Night actions + votes use per-player writes to avoid overwrites.
+//      Police result stored locally only (not visible to other players).
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from "react";
 import {
-  saveGameState, getGameState, getRoom, onPlayersChanged,
-  sendChatMessage, getMessages, onNewMessage,
+  saveGameState, getGameState, getRoom, onPlayersChanged, onGameStateChanged,
+  sendChatMessage, onNewMessage,
   updateRoomStatus, updatePlayer,
+  db, ref, dbUpdate, dbGet,
 } from "../lib/db";
 import {
   botNightAction, botVote, resolveNight, resolveVotes,
@@ -26,6 +28,7 @@ interface GameEngineValue {
   myRole: Player["role"];
   amAlive: boolean;
   winner: "mafia" | "town" | undefined;
+  policeResult: { targetId: string; isMafia: boolean } | null;
   startGame: () => Promise<void>;
   beginNight: () => Promise<void>;
   submitAction: (type: "kill" | "save" | "investigate", targetId: string) => Promise<void>;
@@ -35,38 +38,26 @@ interface GameEngineValue {
 
 const Ctx = createContext<GameEngineValue | null>(null);
 
-export function GameEngineProvider({
-  code,
-  myUid,
-  children,
-}: {
-  code: string;
-  myUid: string;
-  children: ReactNode;
-}) {
+export function GameEngineProvider({ code, myUid, children }: { code: string; myUid: string; children: ReactNode }) {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  // hostId loaded directly from the room doc — never wrong
   const [roomHostId, setRoomHostId] = useState<string>("");
+  // Police result stored LOCALLY only — never sent to Firebase
+  const [policeResult, setPoliceResult] = useState<{ targetId: string; isMafia: boolean } | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const botTimerRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const phaseRef = useRef<GamePhase>("lobby");
   const advancingRef = useRef(false);
+  const msgIdsRef = useRef(new Set<string>());
 
-  // isHost determination — multiple fallbacks so the host is NEVER wrong:
-  //  1. room doc's hostId matches me
-  //  2. my player entry is flagged isHost
-  //  3. I'm the only non-bot human in the room (I must be the host)
   const humanPlayers = players.filter(p => !p.isBot);
   const isHost = myUid !== "" && (
     roomHostId === myUid ||
     players.some(p => p.id === myUid && p.isHost) ||
     (humanPlayers.length === 1 && humanPlayers[0]?.id === myUid)
   );
-
-  // Keep isHost in a ref so the timer effect doesn't restart when it changes
   const isHostRef = useRef(isHost);
   useEffect(() => { isHostRef.current = isHost; }, [isHost]);
 
@@ -78,69 +69,84 @@ export function GameEngineProvider({
   const round = gameState?.round ?? 1;
   const winner = gameState?.winner;
 
-  // ── Load room host from DB immediately ─────────────────────────────────────
+  // ── Load room host ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (!code || !myUid) return;
-    getRoom(code).then(room => {
-      if (room) {
-        setRoomHostId(room.hostId);
-        console.log("[Mafia67] Room host:", room.hostId, "| My uid:", myUid, "| Am I host?", room.hostId === myUid);
-      } else {
-        console.warn("[Mafia67] No room doc found for code:", code);
-      }
-    }).catch(e => console.error("[Mafia67] getRoom failed:", e));
+    getRoom(code).then(room => { if (room) setRoomHostId(room.hostId); });
   }, [code, myUid]);
 
-  // ── Listeners ──────────────────────────────────────────────────────────────
+  // ── Real-time player listener ───────────────────────────────────────────────
   useEffect(() => {
     if (!code) return;
     return onPlayersChanged(code, setPlayers);
   }, [code]);
 
+  // ── Real-time game state listener (ALL players sync from Firebase) ──────────
   useEffect(() => {
     if (!code) return;
-    getMessages(code).then(setMessages);
+    return onGameStateChanged(code, (gs) => {
+      if (!gs) return;
+      setGameState(prev => {
+        // Merge: keep local players list (which has roles from assignRoles)
+        // but update phase/timer/votes/nightActions from Firebase
+        const basePlayers = prev?.players.length ? prev.players : players;
+        return {
+          roomId: code,
+          phase: gs.phase,
+          round: gs.round,
+          players: basePlayers,
+          nightActions: gs.nightActions ?? {},
+          votes: gs.votes ?? [],
+          timer: gs.timer ?? 0,
+          lastEliminated: gs.lastEliminated,
+          lastSaved: gs.lastSaved,
+          winner: gs.winner,
+          messages: prev?.messages ?? [],
+        };
+      });
+      phaseRef.current = gs.phase;
+    });
+  }, [code, players]);
+
+  // ── Real-time messages (deduplicated) ───────────────────────────────────────
+  useEffect(() => {
+    if (!code) return;
     return onNewMessage(code, msg => {
+      if (msgIdsRef.current.has(msg.id)) return; // deduplicate
+      msgIdsRef.current.add(msg.id);
       setMessages(prev => [...prev, msg]);
       if (msg.userId !== myUid && msg.type !== "system") sfx.message();
     });
   }, [code, myUid]);
 
-  // Load persisted game state (reconnect support)
-  useEffect(() => {
-    if (!code) return;
-    getGameState(code).then(gs => {
-      if (!gs || gs.phase === "lobby") return;
-      setGameState({
-        roomId: code,
-        phase: gs.phase,
-        round: gs.round,
-        players: [],
-        nightActions: gs.nightActions ?? {},
-        votes: gs.votes ?? [],
-        timer: gs.timer,
-        lastEliminated: gs.lastEliminated,
-        lastSaved: gs.lastSaved,
-        winner: gs.winner,
-        messages: [],
-      });
-      phaseRef.current = gs.phase;
-    });
-  }, [code]);
-
-  // Sync live players into gameState
+  // ── Sync live players into gameState ────────────────────────────────────────
   useEffect(() => {
     if (!players.length) return;
     setGameState(prev => {
       if (!prev) return prev;
       if (!prev.players.length) return { ...prev, players };
+      // Host migration: if current host left, promote me
+      const currentHost = players.find(p => p.isHost);
+      let newPlayers = players;
+      if (!currentHost && myUid) {
+        const mePlayer = players.find(p => p.id === myUid && p.isAlive);
+        if (mePlayer) {
+          newPlayers = players.map(p => p.id === myUid ? { ...p, isHost: true } : p);
+          updatePlayer(code, myUid, { isHost: true }).catch(console.error);
+        }
+      }
       const merged = prev.players.map(gp => {
-        const live = players.find(p => p.id === gp.id);
-        return live ? { ...gp, username: live.username, avatar: live.avatar } : gp;
+        const live = newPlayers.find(p => p.id === gp.id);
+        return live ? { ...gp, username: live.username, avatar: live.avatar, isHost: live.isHost } : gp;
       });
       return { ...prev, players: merged };
     });
-  }, [players]);
+  }, [players, myUid, code]);
+
+  // ── Reset police result on new night ────────────────────────────────────────
+  useEffect(() => {
+    if (phase === "night") setPoliceResult(null);
+  }, [phase, round]);
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
   const clearTimers = useCallback(() => {
@@ -158,29 +164,38 @@ export function GameEngineProvider({
     });
   }, [code]);
 
+  // ── Atomic night action write (only writes THIS player's field) ─────────────
+  async function writeNightAction(field: string, value: string) {
+    if (!db) return;
+    await dbUpdate(ref(db, `rooms/${code}/gameState/nightActions`), { [field]: value });
+  }
+
+  // ── Atomic vote write (each player writes under their uid) ──────────────────
+  async function writeVote(voterId: string, targetId: string) {
+    if (!db) return;
+    await dbUpdate(ref(db, `rooms/${code}/gameState/voteMap`), { [voterId]: targetId });
+  }
+
+  // ── Read all votes from voteMap ─────────────────────────────────────────────
+  async function readVoteMap(): Promise<{ voterId: string; targetId: string }[]> {
+    if (!db) return [];
+    const snap = await dbGet(ref(db, `rooms/${code}/gameState/voteMap`));
+    if (!snap.exists()) return [];
+    const map = snap.val() as Record<string, string>;
+    return Object.entries(map).map(([voterId, targetId]) => ({ voterId, targetId }));
+  }
+
   function scheduleBotNightActions(gamePlayers: Player[]) {
     const bots = gamePlayers.filter(p => p.isBot && p.isAlive && p.role && p.role !== "citizen");
     bots.forEach((bot, i) => {
-      const t = setTimeout(() => {
-        setGameState(pg => {
-          if (!pg || pg.phase !== "night") return pg;
-          const action = botNightAction(bot, pg);
-          const na: NightActions = { ...pg.nightActions };
-          if (typeof action === "object") {
-            if (bot.role === "mafia" && action.mafiaTarget) na.mafiaTarget = action.mafiaTarget;
-            if (bot.role === "doctor" && action.doctorTarget) na.doctorTarget = action.doctorTarget;
-            if (bot.role === "police" && action.policeTarget) {
-              const tgt = pg.players.find(p => p.id === action.policeTarget);
-              if (tgt) {
-                na.policeTarget = action.policeTarget;
-                na.policeResult = { targetId: tgt.id, isMafia: tgt.role === "mafia" };
-              }
-            }
-          }
-          const next = { ...pg, nightActions: na };
-          persist(next);
-          return next;
-        });
+      const t = setTimeout(async () => {
+        if (!gameState) return;
+        const action = botNightAction(bot, gameState);
+        if (typeof action === "object") {
+          if (bot.role === "mafia" && action.mafiaTarget) await writeNightAction("mafiaTarget", action.mafiaTarget);
+          if (bot.role === "doctor" && action.doctorTarget) await writeNightAction("doctorTarget", action.doctorTarget);
+          if (bot.role === "police" && action.policeTarget) await writeNightAction("policeTarget", action.policeTarget);
+        }
       }, 3000 + i * 2000);
       botTimerRef.current.push(t);
     });
@@ -191,9 +206,17 @@ export function GameEngineProvider({
     if (advancingRef.current) return;
     advancingRef.current = true;
     try {
+      // Read night actions from Firebase (not local state) to get all players' actions
+      let nightActions = prev.nightActions;
+      if (prev.phase === "night" && db) {
+        const snap = await dbGet(ref(db, `rooms/${code}/gameState/nightActions`));
+        if (snap.exists()) nightActions = snap.val() as NightActions;
+      }
+      const prevWithActions = { ...prev, nightActions };
+
       if (prev.phase === "night") {
         sfx.day();
-        const { killed, saved, announcement } = resolveNight(prev);
+        const { killed, saved, announcement } = resolveNight(prevWithActions);
         let up = prev.players.map(p => ({ ...p }));
         if (killed && !saved) {
           up = up.map(p => p.id === killed.id ? { ...p, isAlive: false } : p);
@@ -206,11 +229,7 @@ export function GameEngineProvider({
           const gs: GameState = {
             ...prev, phase: "game-over", players: up, timer: 0, winner: w,
             nightActions: {}, votes: [],
-            messages: [...prev.messages, {
-              id: cryptoId(), userId: "system", username: "System",
-              message: w === "mafia" ? "🎭 THE MAFIA WINS! The town has fallen." : "🏛️ THE TOWN WINS! All Mafia eliminated.",
-              timestamp: Date.now(), type: "system",
-            }],
+            messages: [...prev.messages, { id: cryptoId(), userId: "system", username: "System", message: w === "mafia" ? "🎭 THE MAFIA WINS!" : "🏛️ THE TOWN WINS!", timestamp: Date.now(), type: "system" }],
           };
           setGameState(gs); await persist(gs); await updateRoomStatus(code, "finished");
           return;
@@ -219,38 +238,31 @@ export function GameEngineProvider({
           ...prev, phase: "day-discussion", players: up,
           timer: 60, nightActions: {}, votes: [],
           lastEliminated: killed?.id, lastSaved: saved,
-          messages: [...prev.messages, {
-            id: cryptoId(), userId: "system", username: "System",
-            message: announcement, timestamp: Date.now(), type: "system",
-          }],
+          messages: [...prev.messages, { id: cryptoId(), userId: "system", username: "System", message: announcement, timestamp: Date.now(), type: "system" }],
         };
         setGameState(gs); await persist(gs);
+        // Clear voteMap for next voting phase
+        if (db) await dbUpdate(ref(db, `rooms/${code}/gameState`), { voteMap: null });
 
       } else if (prev.phase === "day-discussion") {
         const gs: GameState = {
-          ...prev, phase: "day-voting", timer: 30, votes: [],
-          messages: [...prev.messages, {
-            id: cryptoId(), userId: "system", username: "System",
-            message: "⚖️ Voting begins! Choose who to eliminate.", timestamp: Date.now(), type: "system",
-          }],
+          ...prev, phase: "day-voting", timer: 45, votes: [],
+          messages: [...prev.messages, { id: cryptoId(), userId: "system", username: "System", message: "⚖️ VOTING PHASE! Choose who to eliminate.", timestamp: Date.now(), type: "system" }],
         };
         setGameState(gs); await persist(gs);
+        // Bot votes
         prev.players.filter(p => p.isBot && p.isAlive).forEach((bot, i) => {
-          const t = setTimeout(() => {
-            setGameState(pg => {
-              if (!pg || pg.phase !== "day-voting" || pg.votes.find(v => v.voterId === bot.id)) return pg;
-              const target = botVote(bot, pg);
-              if (!target) return pg;
-              const next = { ...pg, votes: [...pg.votes, { voterId: bot.id, targetId: target }] };
-              persist(next);
-              return next;
-            });
+          const t = setTimeout(async () => {
+            const target = botVote(bot, gs);
+            if (target) await writeVote(bot.id, target);
           }, 2000 + i * 1500);
           botTimerRef.current.push(t);
         });
 
       } else if (prev.phase === "day-voting") {
-        const eid = resolveVotes(prev.votes);
+        // Read votes from Firebase voteMap (not local state)
+        const allVotes = await readVoteMap();
+        const eid = resolveVotes(allVotes);
         let up = prev.players.map(p => ({ ...p }));
         let ann = "";
         if (eid) {
@@ -283,67 +295,72 @@ export function GameEngineProvider({
           votes: [], timer: 45, nightActions: {}, lastEliminated: eid ?? undefined,
           messages: [...prev.messages,
             { id: cryptoId(), userId: "system", username: "System", message: ann, timestamp: Date.now(), type: "system" },
-            { id: cryptoId(), userId: "system", username: "System", message: `🌙 Night ${prev.round + 1} falls. Close your eyes...`, timestamp: Date.now() + 100, type: "system" },
+            { id: cryptoId(), userId: "system", username: "System", message: `🌙 Night ${prev.round + 1} falls...`, timestamp: Date.now() + 100, type: "system" },
           ],
         };
         setGameState(gs); await persist(gs);
+        // Clear nightActions and voteMap for next round
+        if (db) await dbUpdate(ref(db, `rooms/${code}/gameState`), { nightActions: {}, voteMap: null });
         scheduleBotNightActions(up);
       }
     } finally {
       advancingRef.current = false;
     }
-  }, [code, persist]);
+  }, [code, persist, gameState]);
 
-  // ── Timer (simple decrement, only host drives phase transitions) ──────────
+  // ── Timer (HOST ONLY decrements and persists) ───────────────────────────────
   useEffect(() => {
-    // No timer during lobby, role-reveal, or game-over
     if (!gameState || gameState.phase === "game-over" || gameState.phase === "lobby" || gameState.phase === "role-reveal") {
-      clearTimers();
-      return;
+      clearTimers(); return;
     }
+    // Only start a NEW timer when phase changes
     if (phaseRef.current === gameState.phase) return;
     phaseRef.current = gameState.phase;
     clearTimers();
 
-    // Simple 1-second interval that decrements timer
+    // Non-host players get timer updates via onGameStateChanged listener above
+    if (!isHostRef.current) return;
+
     timerRef.current = setInterval(() => {
       setGameState(prev => {
         if (!prev || prev.phase === "game-over" || prev.phase === "lobby") return prev;
         if (prev.timer > 0) {
-          return { ...prev, timer: prev.timer - 1 };
+          const updated = { ...prev, timer: prev.timer - 1 };
+          persist(updated).catch(console.error);
+          return updated;
         }
         return prev;
       });
     }, 1000);
 
-    // Separate effect to detect when timer hits 0 and advance
     return () => clearTimers();
-  }, [gameState?.phase, clearTimers]);
+  }, [gameState?.phase, clearTimers, persist]);
 
-  // Detect timer expiry and advance phase (host only)
+  // Timer expiry → advance phase (host only)
   useEffect(() => {
-    if (!gameState) return;
-    if (gameState.phase === "game-over" || gameState.phase === "lobby" || gameState.phase === "role-reveal") return;
-    if (gameState.timer === 0 && isHostRef.current) {
-      // Prevent multiple advances
-      if (!advancingRef.current) {
-        advancePhase(gameState);
-      }
+    if (!gameState || gameState.phase === "game-over" || gameState.phase === "lobby" || gameState.phase === "role-reveal") return;
+    if (gameState.timer === 0 && isHostRef.current && !advancingRef.current) {
+      advancePhase(gameState);
     }
   }, [gameState?.timer, gameState?.phase, advancePhase]);
 
   useEffect(() => { if (timer > 0 && timer <= 5) sfx.countdown(); }, [timer]);
 
-  // Bot day chat
+  // Bot day chat (HOST ONLY to prevent duplicates)
   useEffect(() => {
-    if (!gameState || gameState.phase !== "day-discussion") return;
+    if (!gameState || gameState.phase !== "day-discussion" || !isHostRef.current) return;
     const chatMsgs = [
-      "Anyone else have a bad feeling? 👀",
-      "I'm watching everyone very carefully...",
-      "The Mafia can't hide forever!",
-      "Think logically. Who's been quiet?",
-      "Something feels off today. 🤔",
-      "Let's not rush the vote this time.",
+      "Anyone else have a bad feeling? 👀", "I'm watching everyone very carefully...",
+      "The Mafia can't hide forever!", "Think logically. Who's been quiet?",
+      "Something feels off today. 🤔", "Let's not rush the vote this time.",
+      "I saw someone acting nervous...", "Why is everyone so quiet?",
+      "If we vote wrong, Mafia wins.", "I trust the quiet ones the least.",
+      "This feels like a trap.", "I'm just a citizen, I swear! 🙏",
+      "The Doctor needs to save wisely.", "Did anyone hear anything?",
+      "We need to stick together!", "Who voted suspiciously last round?",
+      "I have a bad feeling about this round.", "Let's end this tonight!",
+      "Stop accusing me, I'm Town!", "The real Mafia is acting too innocent.",
+      "My gut tells me it's the quiet one.", "We are running out of time!",
     ];
     const interval = setInterval(async () => {
       if (Math.random() > 0.4) return;
@@ -352,10 +369,9 @@ export function GameEngineProvider({
       const bot = aliveBots[Math.floor(Math.random() * aliveBots.length)];
       await sendChatMessage(code, {
         id: cryptoId(), userId: bot.id, username: bot.username, avatar: bot.avatar,
-        message: chatMsgs[Math.floor(Math.random() * chatMsgs.length)],
-        type: "public",
+        message: chatMsgs[Math.floor(Math.random() * chatMsgs.length)], type: "public",
       });
-    }, 7000);
+    }, 5000);
     return () => clearInterval(interval);
   }, [gameState?.phase, code]);
 
@@ -363,69 +379,68 @@ export function GameEngineProvider({
   const startGame = useCallback(async () => {
     if (!isHost || players.length < 6) return;
     const withRoles = assignRoles(players);
-    for (const p of withRoles) {
-      await updatePlayer(code, p.id, { role: p.role, isAlive: true });
-    }
-    // Set phase to "role-reveal" so players see the card flip first
+    for (const p of withRoles) await updatePlayer(code, p.id, { role: p.role, isAlive: true });
     const gs: GameState = {
       roomId: code, phase: "role-reveal", round: 1, players: withRoles,
       nightActions: {}, votes: [], timer: 0,
-      messages: [
-        { id: cryptoId(), userId: "system", username: "System", message: "🎭 Roles have been assigned. Look at your card!", timestamp: Date.now(), type: "system" },
-      ],
+      messages: [{ id: cryptoId(), userId: "system", username: "System", message: "🎭 Roles assigned. Look at your card!", timestamp: Date.now(), type: "system" }],
     };
-    setGameState(gs);
-    await persist(gs);
-    await updateRoomStatus(code, "in-game");
+    setGameState(gs); await persist(gs); await updateRoomStatus(code, "in-game");
   }, [code, isHost, players, persist]);
 
-  // Called when player clicks "I understand my role" → starts Night 1
+  // Only HOST begins night (other players auto-sync via onGameStateChanged)
   const beginNight = useCallback(async () => {
     if (!gameState || gameState.phase !== "role-reveal") return;
+    if (!isHostRef.current) return; // Only host can start night
     sfx.night();
-    const updated = { ...gameState, phase: "night" as GamePhase, timer: 45 };
-    setGameState(updated);
-    await persist(updated);
+    const updated: GameState = { ...gameState, phase: "night", timer: 45 };
+    setGameState(updated); await persist(updated);
     scheduleBotNightActions(gameState.players);
   }, [gameState, persist]);
 
+  // Night action — writes ONLY this player's field atomically
   const submitAction = useCallback(async (type: "kill" | "save" | "investigate", targetId: string) => {
     sfx.select();
     if (!gameState || !myRole) return;
-    const na: NightActions = { ...gameState.nightActions };
-    if (myRole === "mafia" && type === "kill") na.mafiaTarget = targetId;
-    else if (myRole === "doctor" && type === "save") na.doctorTarget = targetId;
+    if (myRole === "mafia" && type === "kill") await writeNightAction("mafiaTarget", targetId);
+    else if (myRole === "doctor" && type === "save") await writeNightAction("doctorTarget", targetId);
     else if (myRole === "police" && type === "investigate") {
-      na.policeTarget = targetId;
+      await writeNightAction("policeTarget", targetId);
+      // Store result LOCALLY only — not in Firebase
       const tgt = gameState.players.find(p => p.id === targetId);
-      if (tgt) na.policeResult = { targetId, isMafia: tgt.role === "mafia" };
+      if (tgt) setPoliceResult({ targetId, isMafia: tgt.role === "mafia" });
     }
-    const gs = { ...gameState, nightActions: na };
-    setGameState(gs); await persist(gs);
-  }, [gameState, myRole, persist]);
+    // Update local state for UI
+    const na: NightActions = { ...gameState.nightActions };
+    if (myRole === "mafia") na.mafiaTarget = targetId;
+    else if (myRole === "doctor") na.doctorTarget = targetId;
+    else if (myRole === "police") na.policeTarget = targetId;
+    setGameState(prev => prev ? { ...prev, nightActions: na } : prev);
+  }, [gameState, myRole]);
 
+  // Vote — writes ONLY this player's vote atomically
   const castVote = useCallback(async (targetId: string) => {
     sfx.vote();
     if (!gameState || !amAlive || gameState.phase !== "day-voting") return;
+    await writeVote(myUid, targetId);
+    // Update local state for UI
     const votes = [...gameState.votes.filter(v => v.voterId !== myUid), { voterId: myUid, targetId }];
-    const gs = { ...gameState, votes };
-    setGameState(gs); await persist(gs);
-  }, [gameState, amAlive, myUid, persist]);
+    setGameState(prev => prev ? { ...prev, votes } : prev);
+  }, [gameState, amAlive, myUid]);
 
   const sendMessage = useCallback(async (msg: string) => {
     if (!me || !amAlive) return;
     if (phase === "night" && myRole !== "mafia") return;
     await sendChatMessage(code, {
       id: cryptoId(), userId: me.id, username: me.username, message: msg,
-      type: phase === "night" ? "mafia-chat" : "public",
-      avatar: me.avatar,
+      type: phase === "night" ? "mafia-chat" : "public", avatar: me.avatar,
     });
   }, [code, me, amAlive, phase, myRole]);
 
   return (
     <Ctx.Provider value={{
       gameState, players, messages, phase, timer, round,
-      myUid, isHost, myRole, amAlive, winner,
+      myUid, isHost, myRole, amAlive, winner, policeResult,
       startGame, beginNight, submitAction, castVote, sendMessage,
     }}>
       {children}

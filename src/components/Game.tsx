@@ -57,7 +57,7 @@ function FirebaseGameUI({ code }: { code: string }) {
   const navigate = useNavigate();
   const { user, profile, setProfile, updateUserStats } = useAuth();
   const engine = useGameEngine();
-  const { gameState, players, messages, phase, timer, round, myUid, isHost, myRole, amAlive, winner, submitAction, castVote, sendMessage: sendMsg, startGame, beginNight } = engine;
+  const { gameState, players, messages, phase, timer, round, myUid, isHost, myRole, amAlive, winner, policeResult, submitAction, castVote, sendMessage: sendMsg, startGame, beginNight } = engine;
 
   const [screen, setScreen] = useState<"role-reveal" | "game" | "game-over">("role-reveal");
   const [chatInput, setChatInput] = useState("");
@@ -123,9 +123,10 @@ function FirebaseGameUI({ code }: { code: string }) {
     );
   }
 
-  // Role reveal screen — card flip, then beginNight starts the timer
+  // Role reveal screen — card flip, then host starts Night 1
+  // Non-host players just wait for the phase to change via Firebase listener
   if (phase === "role-reveal" && myRole) {
-    return <RoleRevealScreen role={myRole} onContinue={beginNight} />;
+    return <RoleRevealScreen role={myRole} onContinue={isHost ? beginNight : () => { /* non-host waits for sync */ }} isHost={isHost} />;
   }
   // Legacy: if screen says role-reveal but phase moved on, go to game
   if (screen === "role-reveal" && phase !== "role-reveal") {
@@ -274,29 +275,31 @@ function FirebaseGameUI({ code }: { code: string }) {
                 Confirm action
               </Button>
 
-              {/* Police result */}
-              {gameState.nightActions.policeResult && myRole === "police" && (
-                <div className={`mt-3 rounded-lg border p-3 ${
-                  gameState.nightActions.policeResult.isMafia
-                    ? "border-red-700/60 bg-red-950/40"
-                    : "border-emerald-700/60 bg-emerald-950/20"
-                }`}>
-                  <div className="text-xs text-slate-400 mb-1">🔍 Investigation result</div>
-                  <div className={`font-semibold ${gameState.nightActions.policeResult.isMafia ? "text-red-400" : "text-emerald-400"}`}>
-                    {players.find(p => p.id === gameState.nightActions.policeResult?.targetId)?.username} is{" "}
-                    {gameState.nightActions.policeResult.isMafia ? "⚠️ MAFIA!" : "✅ NOT Mafia"}
-                  </div>
-                </div>
-              )}
+              {/* Police result moved to "already acted" section below */}
             </Card>
           )}
 
-          {/* Already acted at night */}
+          {/* Already acted at night + Police result */}
           {isNight && amAlive && myRole && myRole !== "citizen" && hasActed && (
             <Card className="border-emerald-800/40 text-center py-6">
               <div className="text-3xl mb-2">✅</div>
               <div className="font-semibold text-emerald-400">Action submitted!</div>
-              <div className="text-sm text-slate-500">Waiting for others...</div>
+              <div className="text-sm text-slate-500 mb-4">Waiting for others...</div>
+              
+              {/* Police investigation result — stored LOCALLY, not visible to other players */}
+              {policeResult && myRole === "police" && (
+                <div className={`mt-4 rounded-lg border-2 p-4 ${
+                  policeResult.isMafia
+                    ? "border-red-700/60 bg-red-950/40"
+                    : "border-emerald-700/60 bg-emerald-950/20"
+                }`}>
+                  <div className="text-xs text-slate-400 mb-2 uppercase tracking-wider">🔍 Investigation Result</div>
+                  <div className={`text-lg font-bold ${policeResult.isMafia ? "text-red-400" : "text-emerald-400"}`}>
+                    {players.find(p => p.id === policeResult.targetId)?.username}{" "}
+                    {policeResult.isMafia ? "is ⚠️ MAFIA!" : "is ✅ NOT Mafia"}
+                  </div>
+                </div>
+              )}
             </Card>
           )}
 
@@ -469,7 +472,7 @@ function FirebaseGameUI({ code }: { code: string }) {
 }
 
 // ── 3D CARD FLIP ROLE REVEAL ─────────────────────────────────────────────────
-function RoleRevealScreen({ role, onContinue }: { role: string; onContinue: () => void }) {
+function RoleRevealScreen({ role, onContinue, isHost = true }: { role: string; onContinue: () => void; isHost?: boolean }) {
   const [flipped, setFlipped] = useState(false);
   const [showButton, setShowButton] = useState(false);
   const [shake, setShake] = useState(false);
@@ -631,13 +634,18 @@ function RoleRevealScreen({ role, onContinue }: { role: string; onContinue: () =
       {/* Continue button */}
       {showButton && (
         <div className="relative z-10 mt-10 animate-slide-up">
-          <Button
-            size="lg"
-            className="text-lg px-12 py-4 shadow-2xl"
-            onClick={onContinue}
-          >
-            I understand my role →
-          </Button>
+          {isHost ? (
+            <Button size="lg" className="text-lg px-12 py-4 shadow-2xl" onClick={onContinue}>
+              Start Night →
+            </Button>
+          ) : (
+            <div className="text-center space-y-3">
+              <div className="flex items-center justify-center gap-2 text-sm text-slate-400">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                Waiting for host to start night...
+              </div>
+            </div>
+          )}
           <p className="text-center text-slate-500 text-xs mt-3 uppercase tracking-widest">
             Good luck out there
           </p>
